@@ -159,20 +159,36 @@ class Zen_RaidAlarmStation extends ItemBase
 
 	override void EEDelete(EntityAI parent)
 	{
+		if (g_Game.IsDedicatedServer())
+		{
+			UnregisterRaidStation();
+
+			if (m_ZenRoofCheckTimer)
+			{
+				m_ZenRoofCheckTimer.Stop();
+				m_ZenRoofCheckTimer = null;
+			}
+
+			if (m_ZenResetAlarmTimer)
+			{
+				m_ZenResetAlarmTimer.Stop();
+				m_ZenResetAlarmTimer = null;
+			}
+
+			g_Game.GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(InformConnection);
+
+			InformDisconnectionSafeNoContext("", true);
+		}
+
 		super.EEDelete(parent);
 
 		if (g_Game.IsClient())
 		{
 			if (m_ZenSoundAlarmLoop)
 				m_ZenSoundAlarmLoop.SoundStop();
-	
+
 			if (m_ZenBlinkingLight)
 				m_ZenBlinkingLight.Destroy();
-		}
-		
-		if (g_Game.IsDedicatedServer())
-		{
-			InformDisconnection("", true);
 		}
 	}
 
@@ -450,7 +466,7 @@ class Zen_RaidAlarmStation extends ItemBase
 		if (p_hooks.Count() >= 3)
 			m_ZenWebhook3 = p_hooks.Get(2);
 
-		g_Game.GetCallQueue(CALL_CATEGORY_GAMEPLAY).CallLater(InformConnection, 1500, false, p_name);
+		g_Game.GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(InformConnection, 1500, false, p_name);
 	}
 
 	void SetBaseName(string p_name)
@@ -774,6 +790,33 @@ class Zen_RaidAlarmStation extends ItemBase
 		msg.AddWebhooks(GetWebhooks());
 		GetZenDiscordAPI().SendMessage(msg, this);
 		m_ZenLastDiscordMessageTime = g_Game.GetTime();
+	}
+
+	void InformDisconnectionSafeNoContext(string playerName = "", bool overrideRadarCheck = false)
+	{
+		if (!HasValidWebhook())
+			return;
+
+		string footer = playerName;
+
+		if (footer != "")
+		{
+			footer = footer + " | ";
+		}
+
+		if (GetCompEM())
+		{
+			footer = footer + GetZenEnergyCorrected() + "% " + GetZenRaidAlarmConfig().RaidAlarmBatteryWarning;
+		}
+
+		ref ZenDiscordMessage msg = new ZenDiscordMessage(GetZenRaidAlarmConfig().RaidAlarmMessageTitle, ZEN_RAID_ICON);
+		msg.SetTitle(GetZenRaidAlarmConfig().RaidAlarmMessageTitle);
+		msg.SetMessage(GetZenRaidAlarmConfig().RaidAlarmConnectionOffline + "\n\n" + ZenGameFunctions.GetMapLinkPosition(GetPosition(), m_ZenBaseName));
+		msg.SetFooter(footer);
+		msg.SetColor(255, 255, 0);
+		msg.AddWebhooks(GetWebhooks());
+
+		GetZenDiscordAPI().SendMessage(msg);
 	}
 
 	void InformConnection(string playerName = "")

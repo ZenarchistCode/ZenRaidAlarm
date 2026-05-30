@@ -76,6 +76,21 @@ class ZenRaidAlarmPlugin extends PluginBase
         for (int i = 0; i < m_RaidStations.Count(); i++)
         {
             Zen_RaidAlarmStation station = m_RaidStations.Get(i);
+
+            if (!station)
+            {
+                m_RaidStations.Remove(i);
+                i--;
+                continue;
+            }
+
+            if (station.IsSetForDeletion())
+            {
+                m_RaidStations.Remove(i);
+                i--;
+                continue;
+            }
+
             if (vector.Distance(station.GetPosition(), pos) <= GetZenRaidAlarmConfig().RaidDetectionDistance)
                 return station;
         }
