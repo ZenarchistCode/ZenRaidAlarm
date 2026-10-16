@@ -28,7 +28,10 @@ class ActionBuildZenRaidAlarmStation : ActionContinuousBase
 	{
 		ItemBase itemInHands = player.GetItemInHands();
 
-		if (!itemInHands || itemInHands.IsRuined())
+		if (itemInHands && itemInHands.IsRuined())
+			return false;
+
+		if (!itemInHands)
 		{
 			if (GetZenRaidAlarmClientSyncConfig().RaidAlarmBuildTools.Find("hands") == -1)
 			{

@@ -12,7 +12,7 @@ class ZenRaidAlarmLight extends PointLightBase
 		SetColor(1, 0, 0);
 	}
 
-	void SetColor(int r, int g, int b)
+	void SetColor(float r, float g, float b)
 	{
 		SetAmbientColor(r, g, b);
 		SetDiffuseColor(r, g, b);

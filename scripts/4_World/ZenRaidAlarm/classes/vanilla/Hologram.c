@@ -9,6 +9,7 @@ modded class Hologram
 			return NULL;
 		}
 
+		#ifdef SERVER
 		//! RAID ALARM
 		string itemType = entity_for_placing.GetType();
 		itemType.ToLower();
@@ -30,6 +31,7 @@ modded class Hologram
 			}
 		}
 
+		#endif
 		return superEntityAI;
 	}
 }

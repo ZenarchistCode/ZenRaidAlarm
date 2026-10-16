@@ -40,6 +40,8 @@ class ActionTurnOnZenRaidAlarm: ActionInteractBase
 			{
 				station.OpenRaidAlarmGUI(action_data.m_Player.GetIdentity());
 			}
+			
+			ZMPrint("[ZenRaidAlarm] Player " + action_data.m_Player.GetCachedName() + "(" + action_data.m_Player.GetCachedID() + ") turned ON raid station @ " + station.GetPosition());
 		}
 	}
 }

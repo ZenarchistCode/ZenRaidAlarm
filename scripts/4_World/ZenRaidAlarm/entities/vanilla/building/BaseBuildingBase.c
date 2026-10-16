@@ -34,7 +34,7 @@ modded class BaseBuildingBase
 			PlayerBase pb = PlayerBase.Cast(player);
 			if (pb != NULL)
 			{
-				if (!Zen_RaidAlarmStation.GetTerritoryPermission(pb.GetCachedID(), pb.GetPosition()))
+				if (!Zen_RaidAlarmStation.GetTerritoryPermission(pb.GetCachedID(), GetPosition(), pb, true))
 				{
 					TriggerZenRaidAlarm();
 				}

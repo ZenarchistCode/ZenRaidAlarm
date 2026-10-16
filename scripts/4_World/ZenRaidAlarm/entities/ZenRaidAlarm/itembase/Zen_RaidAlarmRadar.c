@@ -6,7 +6,7 @@ class Zen_RaidAlarmRadar extends DeployableContainer_Base
 		{
 			if (super.EEOnDamageCalculated(damageResult, damageType, source, component, dmgZone, ammo, modelPos, speedCoef))
 			{
-				if (GetZenRaidAlarmConfig().RaidStationInvincible)
+				if (GetZenRaidAlarmConfig().RaidRadarDishInvincible)
 				{
 					return false;
 				}

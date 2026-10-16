@@ -77,6 +77,12 @@ class ZenRaidAlarmConfig : ZenConfigBase
 	override void AfterLoad()
 	{
 		super.AfterLoad();
+		if (!AdminWebhooks) AdminWebhooks = new array<string>;
+		if (!ItemsDamagedDetect) ItemsDamagedDetect = new array<string>;
+		if (!ItemsDeployedTriggerRaidAlert) ItemsDeployedTriggerRaidAlert = new array<string>;
+		if (!RaidAlarmBuildTools) RaidAlarmBuildTools = new array<string>;
+		if (!RaidAlarmDismantleTools) RaidAlarmDismantleTools = new array<string>;
+		if (!ItemsRequiredForIngameAlert) ItemsRequiredForIngameAlert = new map<string, bool>;
 		
 		// Convert all arrays to lower case 
 		string entry;
@@ -102,6 +108,19 @@ class ZenRaidAlarmConfig : ZenConfigBase
 			RaidAlarmDismantleTools.Set(i, entry);
 		}
 		
+		ref map<string, bool> normalizedItems = new map<string, bool>;
+		foreach (string itemType, bool needsPower : ItemsRequiredForIngameAlert)
+		{
+			itemType.ToLower();
+			normalizedItems.Set(itemType, needsPower);
+		}
+		ItemsRequiredForIngameAlert = normalizedItems;
+
+		RaidDetectionDistance = Math.Max(0, RaidDetectionDistance);
+		RaidDiscordAlertCooldownSecs = Math.Max(0, RaidDiscordAlertCooldownSecs);
+		RaidAlarmBatteryUsagePerSec = Math.Max(0, RaidAlarmBatteryUsagePerSec);
+		RaidAlarmResetInMinutes = Math.Max(0.001, RaidAlarmResetInMinutes);
+
 		GetZenRaidAlarmClientSyncConfig();
 		GetZenRaidAlarmClientSyncConfig().RaidAlarmBuildTools.Copy(RaidAlarmBuildTools);
 		GetZenRaidAlarmClientSyncConfig().RaidAlarmDismantleTools.Copy(RaidAlarmDismantleTools);

@@ -27,6 +27,12 @@ class CfgMods
 	{
 		author = "Zenarchist";
 		type = "mod";
+		dependencies[]=
+		{
+			"Game",
+			"World",
+			"Mission"
+		};
 		class defs
 		{
 			class gameScriptModule

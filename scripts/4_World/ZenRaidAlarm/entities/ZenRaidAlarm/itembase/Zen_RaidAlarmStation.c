@@ -18,6 +18,12 @@ class Zen_RaidAlarmStation extends ItemBase
 	protected bool m_ManualTurnOnOff = false;
 	protected ref Timer m_ZenRoofCheckTimer;
 	protected ref Timer m_ZenResetAlarmTimer;
+	protected string m_ZenRuntimeStationId = "";
+	protected bool m_ZenPlaySound = true;
+	protected float m_ZenBatteryUsage = 1.0;
+	protected bool m_ZenRadarRoofBlocked;
+	protected bool m_ZenRadarRoofChecked;
+	protected bool m_ZenRaidDiscordPending;
 
 	// Client and/or Server
 	protected int m_ZenRaidAlarmStatus = ZEN_ALARM_STATUS_OFF;
@@ -70,10 +76,10 @@ class Zen_RaidAlarmStation extends ItemBase
 			temp = ConfigGetString("descriptionShort");
 
 		string newTooltip = temp;
-		if (GetCompEM())
+		if (GetCompEM() && m_ZenBatteryUsage > 0)
 		{
-			// Quantity / energyUsagePerSecond = seconds of energy left.
-			newTooltip = newTooltip + " | " + ZenDiscordAPIFunctions.GetTimeToString(GetQuantity() / GetCompEM().GetEnergyUsage(), true, true, false);
+			// Use the server-configured consumption rate synchronized with this station.
+			newTooltip = newTooltip + " | " + ZenDiscordAPIFunctions.GetTimeToString(GetQuantity() / m_ZenBatteryUsage, true, true, false);
 		}
 
 		return newTooltip;
@@ -98,6 +104,9 @@ class Zen_RaidAlarmStation extends ItemBase
 
 	void PlayAlarmSound()
 	{
+		if (!m_ZenPlaySound)
+			return;
+
 		if (!m_ZenSoundAlarmLoop)
 		{
 			if (GetMegaphone() != null && GetMegaphone().GetCompEM().CanWork())
@@ -150,18 +159,30 @@ class Zen_RaidAlarmStation extends ItemBase
 		#ifdef SERVER
 		if (GetCompEM())
 		{
-			GetCompEM().SetEnergyUsage(GetZenRaidAlarmConfig().RaidAlarmBatteryUsagePerSec);
+			m_ZenPlaySound = GetZenRaidAlarmConfig().RaidPlaySound;
+			m_ZenBatteryUsage = GetZenRaidAlarmConfig().RaidAlarmBatteryUsagePerSec;
+			GetCompEM().SetEnergyUsage(m_ZenBatteryUsage);
 		}
 		#endif
 
 		RegisterNetSyncVariableInt("m_ZenRaidAlarmStatus");
+		RegisterNetSyncVariableBool("m_ZenPlaySound");
+		RegisterNetSyncVariableFloat("m_ZenBatteryUsage", 0, 0, 3);
 	}
 
 	override void EEDelete(EntityAI parent)
 	{
-		if (g_Game.IsDedicatedServer())
+		if (g_Game && g_Game.IsDedicatedServer())
 		{
-			UnregisterRaidStation();
+			g_Game.GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(InformConnection);
+			g_Game.GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(InformDisconnection);
+			g_Game.GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(InformWebhookUpdate);
+			g_Game.GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(SendRaidDiscordAlert);
+			g_Game.GetCallQueue(CALL_CATEGORY_GAMEPLAY).Remove(InformConnection);
+			g_Game.GetCallQueue(CALL_CATEGORY_GAMEPLAY).Remove(InformDisconnection);
+			g_Game.GetCallQueue(CALL_CATEGORY_GAMEPLAY).Remove(InformWebhookUpdate);
+
+			UnregisterRaidStation("Entity deleted.");
 
 			if (m_ZenRoofCheckTimer)
 			{
@@ -177,12 +198,12 @@ class Zen_RaidAlarmStation extends ItemBase
 
 			g_Game.GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(InformConnection);
 
-			InformDisconnectionSafeNoContext("", true);
+			//InformDisconnectionSafeNoContext("", true);
 		}
 
 		super.EEDelete(parent);
 
-		if (g_Game.IsClient())
+		if (g_Game && g_Game.IsClient())
 		{
 			if (m_ZenSoundAlarmLoop)
 				m_ZenSoundAlarmLoop.SoundStop();
@@ -303,7 +324,6 @@ class Zen_RaidAlarmStation extends ItemBase
 
 #ifdef SERVER
 		UpdateBatteryEnergy();
-		UnregisterRaidStation();
 
 		if (m_ZenRoofCheckTimer)
 			m_ZenRoofCheckTimer.Stop();
@@ -312,6 +332,8 @@ class Zen_RaidAlarmStation extends ItemBase
 		{
 			InformDisconnection();
 		}
+		
+		UnregisterRaidStation("OnWorkStop.");
 
 		if (GetAlarmStatus() != ZEN_ALARM_STATUS_WASTRIGGERED)
 			SetAlarmStatus(ZEN_ALARM_STATUS_OFF);
@@ -347,9 +369,10 @@ class Zen_RaidAlarmStation extends ItemBase
 		// If radar is required.... well, check for radar
 		if (GetZenRaidAlarmConfig().RaidDiscordAlertRequiresRadar)
 		{
-			if (!m_ZenRoofCheckTimer && GetZenRaidAlarmConfig().RaidRadarDishCheckRoofTimerMinutes > 0)
+			if (GetZenRaidAlarmConfig().RaidRadarDishCheckRoofTimerMinutes > 0 && (!m_ZenRoofCheckTimer || !m_ZenRoofCheckTimer.IsRunning()))
 			{
-				m_ZenRoofCheckTimer = new Timer();
+				if (!m_ZenRoofCheckTimer)
+					m_ZenRoofCheckTimer = new Timer();
 				m_ZenRoofCheckTimer.Run(GetZenRaidAlarmConfig().RaidRadarDishCheckRoofTimerMinutes * 60, this, "CheckForRoof", null, true);
 			}
 
@@ -390,9 +413,9 @@ class Zen_RaidAlarmStation extends ItemBase
 		SetSynchDirty();
 	}
 
-	static bool GetTerritoryPermission(string uid, vector pos, PlayerBase player = null)
+	static bool GetTerritoryPermission(string uid, vector pos, PlayerBase player = null, bool checkMembership = false)
 	{
-		if (!GetZenRaidAlarmConfig().RaidAlarmRequiresTerritory)
+		if (!checkMembership && !GetZenRaidAlarmConfig().RaidAlarmRequiresTerritory)
 			return true;
 
 		bool anyChecksPassed = false;
@@ -411,14 +434,14 @@ class Zen_RaidAlarmStation extends ItemBase
 		TerritoryFlag tflag = GetNearestTerritoryFlag(pos);
 		if (tflag != null && tflag.HasRaisedFlag())
 		{
-			if (tflag.IsTerritoryMember(uid)
+			if (tflag.IsTerritoryMember(uid))
 			{
 				anyChecksPassed = true;
 			}
 		}
 #endif
 
-#ifdef ZENTERRITORIES
+#ifdef ZenTerritories
 		if (player)
 		{
 			TerritoryFlag zenFlag = GetZenTerritoryPlugin().GetNearestFlag(pos, TerritoryFlag.GetZenRefresherRadius() * 2);
@@ -455,8 +478,12 @@ class Zen_RaidAlarmStation extends ItemBase
 
 	void SetWebhooks(array<string> p_hooks, string p_name = "")
 	{
-		InformWebhookUpdate(p_name);
+		if (!p_hooks)
+			return;
 
+		m_ZenWebhook1 = "";
+		m_ZenWebhook2 = "";
+		m_ZenWebhook3 = "";
 		if (p_hooks.Count() >= 1)
 			m_ZenWebhook1 = p_hooks.Get(0);
 
@@ -466,6 +493,7 @@ class Zen_RaidAlarmStation extends ItemBase
 		if (p_hooks.Count() >= 3)
 			m_ZenWebhook3 = p_hooks.Get(2);
 
+		InformWebhookUpdate(p_name);
 		g_Game.GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(InformConnection, 1500, false, p_name);
 	}
 
@@ -513,47 +541,39 @@ class Zen_RaidAlarmStation extends ItemBase
 		if (!GetZenRaidAlarmConfig().RaidDiscordAlertRequiresRadar)
 			return true;
 
-		// GetPluggedDevice() returns the cable reel
-		// Only one plug is allowed per raid station so we can just get the first item
+		Zen_RaidAlarmRadar previousRadar = m_ZenAttachedRaidRadar;
+		m_ZenAttachedRaidRadar = null;
 		CableReel cable = CableReel.Cast(GetCompEM().GetPluggedDevice());
-		if (!cable)
+		for (int link = 0; cable && link < 3; link++)
 		{
-			m_ZenAttachedRaidRadar = null;
+			EntityAI device = cable.GetCompEM().GetPluggedDevice();
+			m_ZenAttachedRaidRadar = Zen_RaidAlarmRadar.Cast(device);
+			if (m_ZenAttachedRaidRadar)
+				break;
+			cable = CableReel.Cast(device);
+		}
+
+		if (previousRadar != m_ZenAttachedRaidRadar)
+		{
+			m_ZenRadarRoofChecked = false;
+			m_ZenRadarRoofBlocked = false;
+		}
+		if (!m_ZenAttachedRaidRadar || m_ZenAttachedRaidRadar.IsRuined())
 			return false;
-		}
 
-		m_ZenAttachedRaidRadar = Zen_RaidAlarmRadar.Cast(cable.GetCompEM().GetPluggedDevice());
-
-		// If radar is not first attached item to cable reel, check for daisy chain
-		if (!m_ZenAttachedRaidRadar)
+		int roofMinutes = GetZenRaidAlarmConfig().RaidRadarDishCheckRoofTimerMinutes;
+		if (roofMinutes < 0)
+			m_ZenRadarRoofBlocked = false;
+		else if (checkForRoof && (roofMinutes > 0 || !m_ZenRadarRoofChecked))
 		{
-			CableReel daisyChain = CableReel.Cast(cable.GetCompEM().GetPluggedDevice());
-			if (daisyChain != null)
-			{
-				m_ZenAttachedRaidRadar = Zen_RaidAlarmRadar.Cast(daisyChain.GetCompEM().GetPluggedDevice());
-				if (!m_ZenAttachedRaidRadar)
-				{
-					CableReel daisyChain2 = CableReel.Cast(daisyChain.GetCompEM().GetPluggedDevice());
-					if (daisyChain2 != null)
-						m_ZenAttachedRaidRadar = Zen_RaidAlarmRadar.Cast(daisyChain2.GetCompEM().GetPluggedDevice());
-				}
-			}
+			bool wasBlocked = m_ZenRadarRoofBlocked;
+			m_ZenRadarRoofBlocked = MiscGameplayFunctions.IsUnderRoof(m_ZenAttachedRaidRadar, GameConstants.ROOF_CHECK_RAYCAST_DIST * 2);
+			m_ZenRadarRoofChecked = true;
+			if (m_ZenRadarRoofBlocked && !wasBlocked)
+				InformObstruction();
 		}
 
-		if (m_ZenAttachedRaidRadar)
-		{
-			if (GetZenRaidAlarmConfig().RaidRadarDishCheckRoofTimerMinutes != -1 && checkForRoof)
-			{
-				if (MiscGameplayFunctions.IsUnderRoof(m_ZenAttachedRaidRadar, GameConstants.ROOF_CHECK_RAYCAST_DIST * 2))
-				{
-					InformObstruction();
-					m_ZenAttachedRaidRadar = null;
-					return false;
-				}
-			}
-		}
-
-		return m_ZenAttachedRaidRadar != null;
+		return !m_ZenRadarRoofBlocked;
 	}
 
 	void UpdateBatteryEnergy()
@@ -563,6 +583,9 @@ class Zen_RaidAlarmStation extends ItemBase
 		CarBattery battery = GetCarBattery();
 		if (battery != null)
 			energy = battery.GetCompEM().GetEnergy0To1();
+
+		if (energy >= 0.1)
+			m_ZenNotifiedLowPower = false;
 
 		SetQuantity(GetQuantityMax() * energy);
 		GetCompEM().SetEnergy0To1(energy);
@@ -591,10 +614,10 @@ class Zen_RaidAlarmStation extends ItemBase
 	void TurnOnAlarm(string playerName)
 	{
 		m_ManualTurnOnOff = true;
-		InformConnection(playerName);
 		GetCompEM().SwitchOn();
 		GetCompEM().InteractBranch(this);
 		SetAlarmStatus(ZEN_ALARM_STATUS_ARMED);
+		InformConnection(playerName);
 	}
 
 	void TriggerRaidAlarm()
@@ -609,7 +632,24 @@ class Zen_RaidAlarmStation extends ItemBase
 		// Alert any online players with notifications 
 		NotifyAllTerritoryMembers();
 
-		// Check if we have valid webhooks first
+		m_ZenRaidDiscordPending = true;
+		SendRaidDiscordAlert();
+	}
+
+	void SendRaidDiscordAlert()
+	{
+		if (!m_ZenRaidDiscordPending)
+			return;
+
+		int remaining = GetZenRaidAlarmConfig().RaidDiscordAlertCooldownSecs * 1000 - (g_Game.GetTime() - m_ZenLastDiscordMessageTime);
+		if (remaining > 0)
+		{
+			g_Game.GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(SendRaidDiscordAlert);
+			g_Game.GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(SendRaidDiscordAlert, remaining + 1, false);
+			return;
+		}
+
+		m_ZenRaidDiscordPending = false;
 		if (!CanSendDiscordMessage())
 			return;
 
@@ -620,7 +660,7 @@ class Zen_RaidAlarmStation extends ItemBase
 		msg.SetFooter(footer);
 		msg.SetColor(255, 0, 0);
 		msg.AddWebhooks(GetWebhooks());
-		GetZenDiscordAPI().SendMessage(msg, this);
+		GetZenDiscordAPI().SendMessage(msg, "RaidAlarm", GetZenRuntimeStationId());
 		m_ZenLastDiscordMessageTime = g_Game.GetTime();
 	}
 
@@ -628,6 +668,11 @@ class Zen_RaidAlarmStation extends ItemBase
 
 	static TerritoryFlag GetNearestTerritoryFlag(vector pos)
 	{
+#ifdef ZenTerritories
+		TerritoryFlag zenFlag = GetZenTerritoryPlugin().GetNearestFlag(pos, TerritoryFlag.GetZenRefresherRadius() * 2);
+		if (zenFlag && zenFlag.IsValidZenTerritory())
+			return zenFlag;
+#endif
 #ifdef EXPANSIONMODBASEBUILDING
 		ExpansionTerritoryModule expansionTerritoryModule = ExpansionTerritoryModule.Cast(CF_ModuleCoreManager.Get(ExpansionTerritoryModule));
 		if (expansionTerritoryModule != null)
@@ -674,27 +719,34 @@ class Zen_RaidAlarmStation extends ItemBase
 		if (!theFlag)
 			return;
 
+#ifdef ZenTerritories
+		if (theFlag.IsValidZenTerritory())
+		{
+			foreach (Man zenMan : onlinePlayers)
+			{
+				pb = PlayerBase.Cast(zenMan);
+				if (pb && pb.GetIdentity() && theFlag.BelongsToZenTerritory(pb) && HasRequiredAlarmItem(pb))
+					NotificationSystem.SendNotificationToPlayerIdentityExtended(pb.GetIdentity(), 15.0, GetZenRaidAlarmConfig().RaidAlarmMessageTitle, raidNotification, "set:ccgui_enforce image:MapShieldBooster");
+			}
+			return;
+		}
+#endif
+
 		// Check Expansion
 #ifdef EXPANSIONMODBASEBUILDING
 		ExpansionTerritory territory = theFlag.GetTerritory();
 		if (!territory || territory.GetTerritoryMembers().Count() == 0)
 			return;
+		
+		if (!territory.GetTerritoryMemberIDs())
+			return;
 
 		foreach(Man man1 : onlinePlayers)
 		{
-			foreach(string uid : territory.GetTerritoryMemberIDs())
+			pb = PlayerBase.Cast(man1);
+			if (pb && pb.GetIdentity() && territory.IsMember(pb.GetCachedID()) && HasRequiredAlarmItem(pb))
 			{
-				pb = PlayerBase.Cast(man1);
-				if (pb && pb.GetIdentity())
-				{
-					if (territory.IsMember(pb.GetCachedID()))
-					{
-						if (HasRequiredAlarmItem(pb))
-						{
-							NotificationSystem.SendNotificationToPlayerIdentityExtended(pb.GetIdentity(), 15.0, GetZenRaidAlarmConfig().RaidAlarmMessageTitle, raidNotification, "set:ccgui_enforce image:MapShieldBooster");
-						}
-					}
-				}
+				NotificationSystem.SendNotificationToPlayerIdentityExtended(pb.GetIdentity(), 15.0, GetZenRaidAlarmConfig().RaidAlarmMessageTitle, raidNotification, "set:ccgui_enforce image:MapShieldBooster");
 			}
 		}
 
@@ -788,7 +840,7 @@ class Zen_RaidAlarmStation extends ItemBase
 		msg.SetFooter(footer);
 		msg.SetColor(255, 255, 0);
 		msg.AddWebhooks(GetWebhooks());
-		GetZenDiscordAPI().SendMessage(msg, this);
+		GetZenDiscordAPI().SendMessage(msg, "RaidAlarm", GetZenRuntimeStationId());
 		m_ZenLastDiscordMessageTime = g_Game.GetTime();
 	}
 
@@ -837,7 +889,7 @@ class Zen_RaidAlarmStation extends ItemBase
 		msg.SetFooter(footer);
 		msg.SetColor(0, 255, 0);
 		msg.AddWebhooks(GetWebhooks());
-		GetZenDiscordAPI().SendMessage(msg, this);
+		GetZenDiscordAPI().SendMessage(msg, "RaidAlarm", GetZenRuntimeStationId());
 		m_ZenLastDiscordMessageTime = g_Game.GetTime();
 	}
 
@@ -852,7 +904,7 @@ class Zen_RaidAlarmStation extends ItemBase
 		msg.SetMessage("" + GetZenEnergyCorrected() + "% " + GetZenRaidAlarmConfig().RaidAlarmBatteryWarning + "\n\n" + ZenGameFunctions.GetMapLinkPosition(GetPosition(), m_ZenBaseName));
 		msg.SetColor(255, 165, 0);
 		msg.AddWebhooks(GetWebhooks());
-		GetZenDiscordAPI().SendMessage(msg, this);
+		GetZenDiscordAPI().SendMessage(msg, "RaidAlarm", GetZenRuntimeStationId());
 		m_ZenLastDiscordMessageTime = g_Game.GetTime();
 	}
 
@@ -874,7 +926,7 @@ class Zen_RaidAlarmStation extends ItemBase
 		msg.SetFooter(footer);
 		msg.SetColor(255, 255, 0);
 		msg.AddWebhooks(GetWebhooks());
-		GetZenDiscordAPI().SendMessage(msg, this);
+		GetZenDiscordAPI().SendMessage(msg, "RaidAlarm", GetZenRuntimeStationId());
 		m_ZenLastDiscordMessageTime = g_Game.GetTime();
 	}
 
@@ -889,7 +941,7 @@ class Zen_RaidAlarmStation extends ItemBase
 		msg.SetMessage(GetZenRaidAlarmConfig().RaidAlarmConnectionObstruction + "\n\n" + ZenGameFunctions.GetMapLinkPosition(GetPosition(), m_ZenBaseName));
 		msg.SetColor(255, 255, 0);
 		msg.AddWebhooks(GetWebhooks());
-		GetZenDiscordAPI().SendMessage(msg, this);
+		GetZenDiscordAPI().SendMessage(msg, "RaidAlarm", GetZenRuntimeStationId());
 		m_ZenLastDiscordMessageTime = g_Game.GetTime();
 	}
 
@@ -898,28 +950,44 @@ class Zen_RaidAlarmStation extends ItemBase
 		if (!GetZenRaidAlarmConfig().RaidDiscordAlertRequiresRadar)
 			return true;
 
-		return m_ZenAttachedRaidRadar != null;
+		return m_ZenAttachedRaidRadar != null && !m_ZenAttachedRaidRadar.IsRuined() && !m_ZenRadarRoofBlocked;
 	}
 
 	bool CanSendDiscordMessage(bool overrideRadarCheck = false)
 	{
+		ProcessQueuedWebhookRemovals();
+
 		if (!HasValidWebhook())
+		{
 			return false;
+		}
 
 		GetRaidAlarmRadar(!overrideRadarCheck);
 
 		// If no radar connected to this station and config disables alert, don't alert discord.
 		if (!HasZenRaidDish() && GetZenRaidAlarmConfig().RaidDiscordAlertRequiresRadar && !overrideRadarCheck)
+		{
 			return false;
+		}
 
 		if (g_Game.GetTime() - m_ZenLastDiscordMessageTime < (GetZenRaidAlarmConfig().RaidDiscordAlertCooldownSecs * 1000))
+		{
 			return false;
+		}
 
 		return true;
 	}
 
 	void SetAlarmStatus(int status)
 	{
+		if (m_ZenResetAlarmTimer)
+			m_ZenResetAlarmTimer.Stop();
+		if (status == ZEN_ALARM_STATUS_OFF || status == ZEN_ALARM_STATUS_ARMED)
+		{
+			m_ZenRaidDiscordPending = false;
+			g_Game.GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(SendRaidDiscordAlert);
+		}
+
 		m_ZenRaidAlarmStatus = status;
 		SetSynchDirty();
 
@@ -930,7 +998,7 @@ class Zen_RaidAlarmStation extends ItemBase
 			else
 				m_ZenResetAlarmTimer = new Timer();
 			
-			m_ZenResetAlarmTimer.Run(GetZenRaidAlarmConfig().RaidAlarmResetInMinutes * 60, this, "ResetRaidAlarm", null, true);
+			m_ZenResetAlarmTimer.Run(Math.Max(0.1, GetZenRaidAlarmConfig().RaidAlarmResetInMinutes * 60), this, "ResetRaidAlarm", null, false);
 		}
 	}
 
@@ -978,6 +1046,7 @@ class Zen_RaidAlarmStation extends ItemBase
 	void LockBaseRadio(bool lock)
 	{
 		BaseRadio radio = GetBaseRadio();
+
 		if (!radio)
 			return;
 
@@ -988,13 +1057,45 @@ class Zen_RaidAlarmStation extends ItemBase
 				radio.LockToParent();
 				UpdateBatteryEnergy();
 			}
-		}
-		else
-		{
-			if (radio.IsLockedInSlot())
+
+			if (HasWorkingBaseRadio() && GetCompEM() && GetCompEM().IsWorking() && GetRaidAlarmRadar(false))
 			{
-				radio.UnlockFromParent();
+				RegisterRaidStation();
 			}
+
+			return;
+		}
+
+		if (radio.IsLockedInSlot())
+		{
+			m_ZenDontNotifyAboutPower = true;
+
+			InformDisconnection("", true);
+			UnregisterRaidStation("Unlocked from base.");
+
+			m_ZenWebhook1 = "";
+			m_ZenWebhook2 = "";
+			m_ZenWebhook3 = "";
+			m_ZenWebhook1_FailCount = 0;
+			m_ZenWebhook2_FailCount = 0;
+			m_ZenWebhook3_FailCount = 0;
+			m_ZenBaseName = "";
+
+			radio.UnlockFromParent();
+
+			if (GetCompEM())
+			{
+				GetCompEM().SwitchOff();
+				GetCompEM().InteractBranch(this);
+			}
+
+			SetAlarmStatus(ZEN_ALARM_STATUS_OFF);
+			m_ZenHadValidRadar = false;
+			m_ZenNotifiedLowPower = false;
+
+			SetSynchDirty();
+
+			ZMPrint("[ZenRaidAlarm] Base radio unlocked @ " + GetPosition() + " - unregistered station and wiped webhooks.");
 		}
 	}
 
@@ -1008,11 +1109,13 @@ class Zen_RaidAlarmStation extends ItemBase
 			plugin.RegisterRaidStation(this);
 	}
 
-	void UnregisterRaidStation()
+	void UnregisterRaidStation(string whyMsg)
 	{
 		ZenRaidAlarmPlugin plugin = ZenRaidAlarmPlugin.Cast(GetPlugin(ZenRaidAlarmPlugin));
 		if (plugin)
-			plugin.UnregisterRaidStation(this);
+		{
+			plugin.UnregisterRaidStation(this, whyMsg);
+		}
 	}
 
 	override void EEHealthLevelChanged(int oldLevel, int newLevel, string zone)
@@ -1085,6 +1188,16 @@ class Zen_RaidAlarmStation extends ItemBase
 		super.AfterStoreLoad();
 
 		SetAlarmStatus(m_ZenRaidAlarmStatus);
+	}
+
+	void SetZenRuntimeStationId(string id)
+	{
+		m_ZenRuntimeStationId = id;
+	}
+
+	string GetZenRuntimeStationId()
+	{
+		return m_ZenRuntimeStationId;
 	}
 	
 	int GetZenEnergyCorrected()
@@ -1164,7 +1277,7 @@ class Zen_RaidAlarmStation extends ItemBase
 	
 	protected void RemoveStoredWebhook(string bad)
 	{
-		ZMPrint("[ZenRaidAlarm] Removed failing webhook @ " + GetPosition() + ": " + bad);
+		ZMPrint("[ZenRaidAlarm] Removed failing webhook @ " + GetPosition());
 		
 		array<string> current = GetWebhooks();
 		ref array<string> clean = new array<string>;
@@ -1190,5 +1303,29 @@ class Zen_RaidAlarmStation extends ItemBase
 		// Not strictly required for persistence (OnStoreSave will persist later),
 		// but safe if you want immediate state updates.
 		SetSynchDirty();
+	}
+
+	void ProcessQueuedWebhookRemovals()
+	{
+		if (m_ZenRuntimeStationId == "")
+			return;
+
+		ZenRaidAlarmPlugin plugin = ZenRaidAlarmPlugin.Cast(GetPlugin(ZenRaidAlarmPlugin));
+
+		if (!plugin)
+			return;
+
+		array<string> removals = plugin.TakeQueuedWebhookRemovals(m_ZenRuntimeStationId);
+
+		if (!removals)
+			return;
+
+		foreach (string webhook : removals)
+		{
+			if (webhook != "")
+			{
+				RemoveStoredWebhook(webhook);
+			}
+		}
 	}
 }

@@ -34,7 +34,7 @@ class ActionViewRaidAlarmGUI: ActionInteractBase
 			return;
 		}
 
-		if (!station.GetTerritoryPermission(action_data.m_Player.GetCachedID(), station.GetPosition()))
+		if (!station.GetTerritoryPermission(action_data.m_Player.GetCachedID(), station.GetPosition(), action_data.m_Player))
 		{
 			NotificationSystem.SendNotificationToPlayerIdentityExtended(action_data.m_Player.GetIdentity(), 15.0, GetZenRaidAlarmConfig().RaidAlarmMessageTitle, GetZenRaidAlarmConfig().RaidAlarmRequiresTerritoryText, "set:ccgui_enforce image:MapShieldBooster");
 			return;

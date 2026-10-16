@@ -133,7 +133,7 @@ class ZenRaidAlarmGUI extends UIScriptedMenu
 		{
 			string baseName = m_BaseName.GetText();
 			if (baseName.Length() >= 14)
-				m_BaseName.SetText(baseName.Substring(0, baseName.Length() - 1));
+				m_BaseName.SetText(baseName.Substring(0, 13));
 		}
 
 		return true;

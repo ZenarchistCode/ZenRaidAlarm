@@ -20,7 +20,10 @@ class ActionDismantleZenRaidAlarmRadar: ActionContinuousBase
 	{
 		ItemBase itemInHands = player.GetItemInHands();
 
-		if (!itemInHands || itemInHands.IsRuined())
+		if (itemInHands && itemInHands.IsRuined())
+			return false;
+
+		if (!itemInHands)
 		{
 			if (GetZenRaidAlarmClientSyncConfig().RaidAlarmDismantleTools.Find("hands") == -1)
 			{

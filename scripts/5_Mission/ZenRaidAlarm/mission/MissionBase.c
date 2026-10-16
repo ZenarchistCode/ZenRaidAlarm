@@ -29,6 +29,9 @@ modded class MissionBase
                 return;
             }
 
+            if (!data || !data.param1)
+                return;
+
             if (data.param1.Count() != 3)
             {
                 Error("Error sync'ing client-side RaidStation data to server - RPC_ReceiveZenRaidAlarmClientWebhooks - count=" + data.param1.Count());
@@ -45,13 +48,16 @@ modded class MissionBase
             {
 				string playerName = "Survivor";
 				PlayerBase pb = PlayerBase.Cast(sender.GetPlayer());
-				if (pb)
-				{
-					playerName = pb.GetCachedName();
-				}
+				if (!pb || !pb.IsAlive() || vector.Distance(pb.GetPosition(), data.param2.GetPosition()) > 3)
+					return;
+				if (!data.param2.GetCompEM().IsWorking() || data.param2.GetAlarmStatus() != Zen_RaidAlarmStation.ZEN_ALARM_STATUS_ARMED)
+					return;
+				if (!Zen_RaidAlarmStation.GetTerritoryPermission(pb.GetCachedID(), data.param2.GetPosition(), pb))
+					return;
+				playerName = pb.GetCachedName();
 				
-                data.param2.SetWebhooks(data.param1, playerName);
                 data.param2.SetBaseName(data.param3);
+                data.param2.SetWebhooks(data.param1, playerName);
             }
         }
     }
@@ -67,6 +73,9 @@ modded class MissionBase
                 Error("Error sync'ing server-side data to client - RPC_ReceiveZenRaidAlarmServerWebhooks");
                 return;
             }
+
+            if (!data || !data.param1)
+                return;
 
             if (data.param1.Count() != 3)
             {
@@ -92,6 +101,8 @@ modded class MissionBase
     // Server -> client :: receive config on client
     void RPC_ReceiveClientSyncConfig(CallType type, ParamsReadContext ctx, PlayerIdentity sender, Object target)
     {
+		if (type != CallType.Client)
+			return;
 	    Param2<array<string>, array<string>> data;
 	    if (!ctx.Read(data))
 	    {
@@ -99,6 +110,9 @@ modded class MissionBase
 	        return;
 	    }
 	
+		if (!data || !data.param1 || !data.param2)
+			return;
+
 	    GetZenRaidAlarmClientSyncConfig().RaidAlarmBuildTools.Clear();
 	    GetZenRaidAlarmClientSyncConfig().RaidAlarmDismantleTools.Clear();
 	
